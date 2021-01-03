@@ -1,4 +1,3 @@
-const fs = require('fs');
 const csv = require('csv-parser');
 const _ = require('lodash');
 const stripBom = require('strip-bom-stream');
@@ -52,14 +51,14 @@ function convertToYnabTransaction(order) {
         transactions.push({
             'account_id': process.env.ACCOUNT_ID,
             'date': orderDate,
-            'amount': 2000,
+            'amount': amount * 0.02,
             'payee_name': 'Amazon',
             'import_id': importId + ';CashBack',
             'memo': importId + ' - ' + 'Cash Back',
             'cleared': 'cleared'
         });
     }
-    if (order['refund'] !== '') {
+    if (order['refund'] !== '' && order['refund'] !== 'pending') {
         transactions.push({
             'account_id': process.env.ACCOUNT_ID,
             'date': orderDate,
