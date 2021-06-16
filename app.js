@@ -1,4 +1,5 @@
 const csv = require('csv-parser');
+const fs = require('fs');
 const _ = require('lodash');
 const stripBom = require('strip-bom-stream');
 
