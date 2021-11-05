@@ -53,6 +53,9 @@ function convertToYnabTransactions(order, items) {
   if (items.length === 1) {
     const isin = items[0]['ASIN/ISBN'];
     const importId = order['Order ID'] + ';' + isin;
+    if (isin === 'B00IX1I3G6' || isin === 'B00QSV1A8Q') {
+      amount = -amount;
+    }
     transactions.push({
       "transaction": {
         'account_id': process.env.ACCOUNT_ID,
