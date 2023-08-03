@@ -18,13 +18,13 @@ const orderFile = args[0];
 console.log('Orders file: ' + orderFile);
 readToList(orderFile).then(function(orders) {
     const ynabTransactions = _.chain(orders)
-        .filter(row => !row['order id'].startsWith("D01") && row['order id'] !== 'order id')
+        .filter(row => !row['order id'].startsWith("D01") && row['order id'] !== 'order id' && !row['order id'].includes("=SUBTOTAL"))
         .flatMap(convertToYnabTransaction)
         .filter(t => t['amount'] !== 0)
         .value();
 
     ynab.createTransactions(ynabTransactions).then(function() {
-        ynab.getTransactions('2020-09-01').then(function(transactions) {
+        ynab.getTransactions('2023-06-01').then(function(transactions) {
             const transactionIds = _.chain(transactions)
                 .filter((t) => /^[0-9A-Z]{3}-[0-9]{7}-[0-9]{7}/.test(t.memo))
                 .map((t) => t.memo.substring(0, 19))
