@@ -24,7 +24,7 @@ readToList(orderFile).then(function(orders) {
         .value();
 
     ynab.createTransactions(ynabTransactions).then(function() {
-        ynab.getTransactions('2023-06-01').then(function(transactions) {
+        ynab.getTransactions('2023-07-01').then(function(transactions) {
             const transactionIds = _.chain(transactions)
                 .filter((t) => /^[0-9A-Z]{3}-[0-9]{7}-[0-9]{7}/.test(t.memo))
                 .map((t) => t.memo.substring(0, 19))
@@ -44,27 +44,18 @@ function convertToYnabTransaction(order) {
     let amount = Math.round(-(Number(order['total'].replace('$', '')) + Number(order['gift'].replace('$', ''))) * 1000);
 
     const payee = 'Amazon';
+    const payee_id = '0462e71e-45c2-4a9b-8a06-b25b137ecc58';
+
     const transactions = [];
 
     const importId = order['order id'];
-    if (order['items'].includes("Amazon.com Gift Card Balance Auto-Reload")) {
-        amount = -amount;
-        transactions.push({
-            'account_id': process.env.ACCOUNT_ID,
-            'date': orderDate,
-            'amount': amount * 0.02,
-            'payee_name': 'Amazon',
-            'import_id': importId + ';CashBack',
-            'memo': importId + ' - ' + 'Cash Back',
-            'cleared': 'cleared'
-        });
-    }
     if (order['refund'] !== '' && order['refund'] !== 'pending') {
         transactions.push({
             'account_id': process.env.ACCOUNT_ID,
             'date': orderDate,
             'amount': Math.round(order['refund'].replace('$', '') * 1000),
             'payee_name': payee,
+            'payee_id': payee_id,
             'import_id': importId + ';Refund',
             'memo': order['order id'] + ' - refund',
             'cleared': 'cleared'
@@ -75,6 +66,7 @@ function convertToYnabTransaction(order) {
         'date': orderDate,
         'amount': amount,
         'payee_name': payee,
+        'payee_id': payee_id,
         'import_id': importId,
         'memo': (order['order id'] + ' - ' + order['items']).substr(0, 200),
         'cleared': 'cleared'
