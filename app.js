@@ -2,6 +2,7 @@ const csv = require('csv-parser');
 const fs = require('fs');
 const _ = require('lodash');
 const stripBom = require('strip-bom-stream');
+const { GoogleGenAI, HarmCategory, HarmBlockThreshold } = require('@google/genai');
 
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
@@ -9,37 +10,98 @@ if (process.env.NODE_ENV !== 'production') {
 
 const ynab = require('./ynab');
 
+// Initialize Gemini
+const MODEL_NAME = "gemini-2.5-flash"; 
+const API_KEY = process.env.GEMINI_API_KEY;
+
+async function summarizeItemsWithGemini(itemTitles) {
+    if (!API_KEY) {
+        console.error("GEMINI_API_KEY is not set. Skipping summarization.");
+        return itemTitles.join(', ');
+    }
+
+    const client = new GoogleGenAI({ apiKey: API_KEY });
+
+    const joinedItems = itemTitles.join(', ');
+
+    const prompt = `Summarize the following Amazon items for a YNAB transaction memo. 
+Focus on the brand and the main product name. 
+Keep it concise but descriptive. 
+Do not include the order ID, date, or price. 
+Output ONLY the summary text.
+
+Items:
+${joinedItems}`;
+
+    try {
+        const result = await client.models.generateContent({
+            model: MODEL_NAME,
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            config: {
+                temperature: 0.2,
+                topK: 1,
+                topP: 1,
+                maxOutputTokens: 150,
+                safetySettings: [
+                    {
+                        category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    },
+                    {
+                        category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    },
+                    {
+                        category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    },
+                    {
+                        category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                    },
+                ]
+            }
+        });
+        const summary = result.candidates[0].content.parts[0].text.trim();
+        return summary;
+    } catch (error) {
+        console.error("Error summarizing with Gemini:", error);
+        return joinedItems; // Fallback to joined items on error
+    }
+}
+
 const args = process.argv.slice(2);
+
 if (args.length < 1) {
     console.log('usage: node app.js orderFile');
     process.exit(1);
 }
 const orderFile = args[0];
 console.log('Orders file: ' + orderFile);
-readToList(orderFile).then(function(orders) {
-    const ynabTransactions = _.chain(orders)
-        .filter(row => !row['order id'].startsWith("D01") && row['order id'] !== 'order id' && !row['order id'].includes("=SUBTOTAL"))
-        .flatMap(convertToYnabTransaction)
-        .filter(t => t['amount'] !== 0)
-        .value();
+readToList(orderFile).then(async function(orders) {
+    const ynabTransactions = [];
+    for (const order of orders) {
+        if (!order['order id'].startsWith("D01") && order['order id'] !== 'order id' && !order['order id'].includes("=SUBTOTAL")) {
+            const transactions = await convertToYnabTransaction(order);
+            ynabTransactions.push(...transactions.filter(t => t['amount'] !== 0));
+        }
+    }
 
-    ynab.createTransactions(ynabTransactions).then(function() {
-        ynab.getTransactions('2023-07-01').then(function(transactions) {
-            const transactionIds = _.chain(transactions)
-                .filter((t) => /^[0-9A-Z]{3}-[0-9]{7}-[0-9]{7}/.test(t.memo))
-                .map((t) => t.memo.substring(0, 19))
-                .value();
+    await ynab.createTransactions(ynabTransactions);
+    ynab.getTransactions('2023-07-01').then(function(transactions) {
+        const transactionIds = _.chain(transactions)
+            .filter((t) => /^[0-9A-Z]{3}-[0-9]{7}-[0-9]{7}/.test(t.memo))
+            .map((t) => t.memo.substring(0, 19))
+            .value();
 
-            const amazonTransactionIds = _.map(orders, (row) => row['order id']);
-            const extraIds = _.filter(transactionIds, (id) => !amazonTransactionIds.includes(id))
-            console.log('# Cancelled Order Ids Found: ' + extraIds.length)
-            _.forEach(extraIds, (id) => console.log(id));
-        });
+        const amazonTransactionIds = _.map(orders, (row) => row['order id']);
+        const extraIds = _.filter(transactionIds, (id) => !amazonTransactionIds.includes(id))
+        console.log('# Cancelled Order Ids Found: ' + extraIds.length)
+        _.forEach(extraIds, (id) => console.log(id));
     });
-
 });
 
-function convertToYnabTransaction(order) {
+async function convertToYnabTransaction(order) {
     const orderDate = order['date'];
     let amount = Math.round(-(Number(order['total'].replace('$', '')) + Number(order['gift'].replace('$', ''))) * 1000);
 
@@ -49,6 +111,25 @@ function convertToYnabTransaction(order) {
     const transactions = [];
 
     const importId = order['order id'];
+    const itemTitles = order['items'].split(';').map(item => item.trim()).filter(item => item !== '');
+    const itemCount = itemTitles.length;
+    const itemSummary = await summarizeItemsWithGemini(itemTitles);
+    const baseMemo = `${order['order id']} (${itemCount} items) - `;
+    const maxSummaryLength = 500 - baseMemo.length;
+    const finalItemSummary = itemSummary.substring(0, maxSummaryLength);
+
+    if (order['items'].includes("Amazon.com Gift Card Balance Auto-Reload")) {
+        amount = -amount;
+        transactions.push({
+            'account_id': process.env.ACCOUNT_ID,
+            'date': orderDate,
+            'amount': amount * 0.02,
+            'payee_name': 'Amazon',
+            'import_id': importId + ';CashBack',
+            'memo': importId + ' - ' + 'Cash Back',
+            'cleared': 'cleared'
+        });
+    }
     if (order['refund'] !== '' && order['refund'] !== 'pending') {
         transactions.push({
             'account_id': process.env.ACCOUNT_ID,
@@ -68,11 +149,10 @@ function convertToYnabTransaction(order) {
         'payee_name': payee,
         'payee_id': payee_id,
         'import_id': importId,
-        'memo': (order['order id'] + ' - ' + order['items']).substr(0, 200),
+        'memo': `${baseMemo}${finalItemSummary}`,
         'cleared': 'cleared'
     });
 
-    // console.log(transactions);
     return transactions;
 }
 
